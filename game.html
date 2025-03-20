@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gumby Multiplayer Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <!-- Load libraries from CDNs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-database.js"></script>
+    <!-- Load environment variables -->
+    <script src="env-config.js"></script>
+    <script>
+        // Initialize application after loading environment variables
+        async function initApp() {
+            // Load environment variables
+            window.ENV = await loadEnv();
+            
+            // Firebase configuration
+            const firebaseConfig = {
+                apiKey: window.ENV.FIREBASE_API_KEY || "",
+                authDomain: "hirschibar-game.firebaseapp.com",
+                projectId: "hirschibar-game",
+                storageBucket: "hirschibar-game.firebasestorage.app",
+                messagingSenderId: "622623055659",
+                appId: "1:622623055659:web:0884afeb444d9f86c6ef6e",
+                databaseURL: "https://hirschibar-game-default-rtdb.firebaseio.com/"
+            };
+        
+            console.log("Initializing Firebase...");
+            let database;
+            try {
+                firebase.initializeApp(firebaseConfig);
+                database = firebase.database();
+                console.log("Firebase initialized successfully");
+            } catch (error) {
+                console.error("Firebase initialization error:", error);
+            }
+
+            // Three.js setup
+            console.log("Setting up Three.js scene...");
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // Sky blue
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+            
+            // Add lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Set initial camera position
+            camera.position.set(0, 10, 15);  // Move further back and higher up
+            camera.lookAt(0, 2, 0);  // Look at where players will be
+
+            // Add grid helper for visualization
+            const gridHelper = new THREE.GridHelper(50, 50, 0xff0000, 0x444444);
+            gridHelper.position.y = 0;
+            scene.add(gridHelper);
+            
+            // Add axes helper
+            const axesHelper = new THREE.AxesHelper(5);
+            scene.add(axesHelper);
+            
+            // Debug sphere to mark origin (0,0,0)
+            const originMarker = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5),
+                new THREE.MeshBasicMaterial({ color: 0xff0000 })
+            );
+            originMarker.position.set(0, 0, 0);
+            scene.add(originMarker);
+
+            // Cannon.js setup
+            console.log("Setting up physics world...");
+            const world = new CANNON.World();
+            world.gravity.set(0, -9.82, 0);
+            
+            // Create materials
+            const playerPhysicsMaterial = new CANNON.Material('playerMaterial');
+            const groundPhysicsMaterial = new CANNON.Material('groundMaterial');
+            
+            // Create contact material behavior
+            const playerGroundContactMaterial = new CANNON.ContactMaterial(
+                playerPhysicsMaterial,
+                groundPhysicsMaterial,
+                {
+                    friction: 0.5,
+                    restitution: 0.3,  // Slight bounce
+                    contactEquationStiffness: 1e8,
+                    contactEquationRelaxation: 3
+                }
+            );
+            
+            // Add contact material to world
+            world.addContactMaterial(playerGroundContactMaterial);
+            
+            // Platform
+            console.log("Creating platform...");
+            const platformGeometry = new THREE.CylinderGeometry(10, 10, 1, 32);
+            const platformMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x888888,
+                emissive: 0x222222,
+                shininess: 30
+            });  
+            const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+            platform.position.set(0, 0.5, 0);  // Position cylinder so top is at y=1
+            platform.receiveShadow = true;
+            platform.castShadow = false;
+            scene.add(platform);
+            console.log("Platform added at position:", platform.position);
+            
+            // Instead of using a cylinder, use a box for better collision 
+            // Cannon.js cylinders can be finicky with collision detection
+            const platformShape = new CANNON.Box(new CANNON.Vec3(10, 0.5, 10));
+            const platformBody = new CANNON.Body({ 
+                mass: 0, 
+                shape: platformShape,
+                material: groundPhysicsMaterial
+            });
+            platformBody.position.set(0, 0.5, 0);  
+            world.addBody(platformBody);
+            
+            // For troubleshooting - make platform bright colored
+            const platformOutlineMaterial = new THREE.MeshBasicMaterial({ 
+                color: 0xff8800, 
+                wireframe: true 
+            });
+            const platformOutline = new THREE.Mesh(platformGeometry, platformOutlineMaterial);
+            platformOutline.position.copy(platform.position);
+            scene.add(platformOutline);
+
+            // Character creation
+            function createCharacter(color) {
+                const group = new THREE.Group();
+                
+                // Body
+                const body = new THREE.Mesh(
+                    new THREE.BoxGeometry(1, 2, 0.5), 
+                    new THREE.MeshPhongMaterial({ color })
+                );
+                body.position.y = 1;
+                body.castShadow = true;
+                group.add(body);
+                
+                // Head
+                const head = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.5), 
+                    new THREE.MeshPhongMaterial({ color })
+                );
+                head.position.y = 2.5;
+                head.castShadow = true;
+                group.add(head);
+                
+                // Left arm
+                const leftArm = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.2, 1, 0.2), 
+                    new THREE.MeshPhongMaterial({ color })
+                );
+                leftArm.position.set(-0.6, 1.5, 0);
+                leftArm.castShadow = true;
+                group.add(leftArm);
+                
+                // Right arm
+                const rightArm = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.2, 1, 0.2), 
+                    new THREE.MeshPhongMaterial({ color })
+                );
+                rightArm.position.set(0.6, 1.5, 0);
+                rightArm.castShadow = true;
+                group.add(rightArm);
+                
+                // Left leg
+                const leftLeg = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.4, 1, 0.4), 
+                    new THREE.MeshPhongMaterial({ color })
+                );
+                leftLeg.position.set(-0.3, 0.5, 0);
+                leftLeg.castShadow = true;
+                group.add(leftLeg);
+                
+                // Right leg
+                const rightLeg = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.4, 1, 0.4), 
+                    new THREE.MeshPhongMaterial({ color })
+                );
+                rightLeg.position.set(0.3, 0.5, 0);
+                rightLeg.castShadow = true;
+                group.add(rightLeg);
+                
+                return group;
+            }
+
+            // Player management
+            console.log("Setting up player management...");
+            const players = {};
+            const localPlayerId = Math.random().toString(36).substring(2);
+            let localPlayer, localPlayerBody, isFallen = false, isOnTop = false;
+
+            // Local player setup
+            console.log("Creating local player...");
+            localPlayer = createCharacter(0xff0000);
+            scene.add(localPlayer);
+            
+            // Create player physics body with improved settings
+            localPlayerBody = new CANNON.Body({ 
+                mass: 1, 
+                shape: new CANNON.Box(new CANNON.Vec3(0.5, 1, 0.25)),
+                material: playerPhysicsMaterial,
+                linearDamping: 0.5,  // Add damping to prevent sliding
+                angularDamping: 0.9  // Reduce spinning
+            });
+            
+            // Position player on top of the platform
+            localPlayerBody.position.set(0, 3, 0);  // Start higher up on the platform
+            world.addBody(localPlayerBody);
+            
+            // Immediately update the visual representation
+            localPlayer.position.set(
+                localPlayerBody.position.x,
+                localPlayerBody.position.y,
+                localPlayerBody.position.z
+            );
+            
+            console.log("Local player created at position:", localPlayerBody.position);
+            
+            // Register local player in Firebase
+            try {
+                database.ref('players').child(localPlayerId).set({
+                    position: localPlayerBody.position,
+                    quaternion: localPlayerBody.quaternion,
+                    state: 'standing'
+                });
+                console.log("Local player registered in Firebase");
+            } catch (error) {
+                console.error("Error registering player in Firebase:", error);
+            }
+
+            // Input handling
+            const keys = {};
+            window.addEventListener('keydown', (e) => { keys[e.key] = true; });
+            window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+            // Multiplayer synchronization
+            console.log("Setting up Firebase listeners...");
+            try {
+                const playersRef = database.ref('players');
+                playersRef.on('child_added', (snapshot) => {
+                    console.log("Player added:", snapshot.key);
+                    const id = snapshot.key;
+                    if (id === localPlayerId) return;
+                    const data = snapshot.val();
+                    const player = createCharacter(0x00ff00);
+                    const playerBody = new CANNON.Body({ mass: 1, shape: new CANNON.Box(new CANNON.Vec3(0.5, 1, 0.25)) });
+                    playerBody.position.set(data.position.x, data.position.y, data.position.z);
+                    world.addBody(playerBody);
+                    scene.add(player);
+                    players[id] = { object: player, body: playerBody, state: data.state };
+                });
+                playersRef.on('child_changed', (snapshot) => {
+                    const id = snapshot.key;
+                    if (id === localPlayerId) return;
+                    const data = snapshot.val();
+                    if (players[id]) {
+                        players[id].body.position.set(data.position.x, data.position.y, data.position.z);
+                        players[id].body.quaternion.set(data.quaternion.x, data.quaternion.y, data.quaternion.z, data.quaternion.w);
+                        players[id].state = data.state;
+                    }
+                });
+                playersRef.on('child_removed', (snapshot) => {
+                    const id = snapshot.key;
+                    if (players[id]) {
+                        scene.remove(players[id].object);
+                        world.removeBody(players[id].body);
+                        delete players[id];
+                    }
+                });
+
+                // Slap handling
+                database.ref('slaps').on('child_added', (snapshot) => {
+                    const slap = snapshot.val();
+                    if (slap.slapped === localPlayerId && !isFallen) {
+                        setFallen(true);
+                    }
+                    snapshot.ref.remove(); // Clean up event
+                });
+
+                // Fall state management
+                function setFallen(fallen) {
+                    if (fallen && !isFallen) {
+                        localPlayerBody.removeShape(localPlayerBody.shapes[0]);
+                        localPlayerBody.addShape(new CANNON.Box(new CANNON.Vec3(1, 0.2, 0.5)));
+                        
+                        // Make sure player doesn't fall through platform - set to just above platform
+                        localPlayerBody.position.y = 1.2;  // Platform is at y=0.5, so y=1.2 is just above it (accounting for player thickness)
+                        
+                        // Rotate to lay flat on back rather than being upside down
+                        // This sets the character to face up (back to the floor)
+                        localPlayerBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI/2);
+                        
+                        localPlayerBody.mass = 0;
+                        localPlayerBody.updateMassProperties();
+                        isFallen = true;
+                        setTimeout(() => setFallen(false), 2000);
+                    } else if (!fallen && isFallen) {
+                        localPlayerBody.removeShape(localPlayerBody.shapes[0]);
+                        localPlayerBody.addShape(new CANNON.Box(new CANNON.Vec3(0.5, 1, 0.25)));
+                        
+                        // Reset position above platform
+                        localPlayerBody.position.y = 2;  // Position player 2 units above platform (platform top is at y=1)
+                        
+                        localPlayerBody.quaternion.set(0, 0, 0, 1);
+                        localPlayerBody.mass = 1;
+                        localPlayerBody.updateMassProperties();
+                        isFallen = false;
+                    }
+                }
+                
+                // Respawn function for falling off the platform
+                function respawnPlayer() {
+                    // Move player back to center of platform, slightly above it
+                    localPlayerBody.position.set(0, 3, 0);
+                    localPlayerBody.velocity.set(0, 0, 0);
+                    localPlayerBody.angularVelocity.set(0, 0, 0);
+                    localPlayerBody.quaternion.set(0, 0, 0, 1);
+                }
+                
+                // Camera position variables for orbiting the platform
+                let cameraAngle = 0;
+                let cameraDistance = 15;
+                let cameraHeight = 10;
+
+                // Animation and update loop
+                function animate() {
+                    requestAnimationFrame(animate);
+                    
+                    try {
+                        world.step(1/60);
+                        
+                        // Input handling for character movement
+                        if (!isFallen) {
+                            // Calculate movement direction based on camera orientation
+                            // First, get the camera's forward direction (negated because camera looks at center)
+                            const cameraForward = new THREE.Vector3(
+                                -camera.position.x,
+                                0, // Remove y component to keep movement horizontal
+                                -camera.position.z
+                            ).normalize();
+                            
+                            // Calculate camera's right vector by crossing forward with up vector
+                            const cameraRight = new THREE.Vector3().crossVectors(
+                                new THREE.Vector3(0, 1, 0), // World up vector
+                                cameraForward
+                            ).normalize();
+                            
+                            // Reset velocity
+                            let movementX = 0;
+                            let movementZ = 0;
+                            
+                            // Apply movement based on key presses
+                            if (keys['w']) { // Forward
+                                movementX += cameraForward.x * 5;
+                                movementZ += cameraForward.z * 5;
+                            }
+                            if (keys['s']) { // Backward
+                                movementX -= cameraForward.x * 5;
+                                movementZ -= cameraForward.z * 5;
+                            }
+                            if (keys['a']) { // Left
+                                movementX -= cameraRight.x * 5;
+                                movementZ -= cameraRight.z * 5;
+                            }
+                            if (keys['d']) { // Right
+                                movementX += cameraRight.x * 5;
+                                movementZ += cameraRight.z * 5;
+                            }
+                            
+                            // Apply calculated velocity
+                            localPlayerBody.velocity.x = movementX;
+                            localPlayerBody.velocity.z = movementZ;
+                            
+                            // Rotate character to face movement direction
+                            if (movementX !== 0 || movementZ !== 0) {
+                                const movementDirection = new THREE.Vector3(movementX, 0, movementZ).normalize();
+                                const angle = Math.atan2(movementDirection.x, movementDirection.z);
+                                localPlayerBody.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
+                            }
+                            
+                            // Vertical movement (unchanged)
+                            if (keys['e']) localPlayerBody.velocity.y = 5; // Jump/climb
+                            if (keys[' ']) {
+                                // Use the character's forward direction for slapping
+                                // Since we rotated the character to face movement direction
+                                const direction = new THREE.Vector3(0, 0, 1).applyQuaternion(
+                                    new THREE.Quaternion(
+                                        localPlayerBody.quaternion.x,
+                                        localPlayerBody.quaternion.y,
+                                        localPlayerBody.quaternion.z,
+                                        localPlayerBody.quaternion.w
+                                    )
+                                );
+                                
+                                for (let id in players) {
+                                    const playerPos = new THREE.Vector3(
+                                        players[id].body.position.x,
+                                        players[id].body.position.y,
+                                        players[id].body.position.z
+                                    );
+                                    const localPos = new THREE.Vector3(
+                                        localPlayerBody.position.x,
+                                        localPlayerBody.position.y,
+                                        localPlayerBody.position.z
+                                    );
+                                    const dist = localPos.distanceTo(playerPos);
+                                    
+                                    // Use a clone of playerPos so we don't modify it for subsequent checks
+                                    const directionToPlayer = playerPos.clone().sub(localPos);
+                                    if (dist < 2 && direction.dot(directionToPlayer.normalize()) > 0.7) { // Higher dot product for more precise slap
+                                        database.ref('slaps').push({ slapper: localPlayerId, slapped: id });
+                                    }
+                                }
+                            }
+                            if (keys['q']) localPlayerBody.torque.x = 10; // Tilt left
+                            else if (keys['e'] && !keys['e']) localPlayerBody.torque.x = -10; // Tilt right (avoid jump conflict)
+                            else localPlayerBody.torque.x = 0;
+                            if (isOnTop) {
+                                if (keys['a']) localPlayerBody.velocity.x = -2;
+                                else if (keys['d']) localPlayerBody.velocity.x = 2;
+                                if (keys['Shift']) {
+                                    localPlayerBody.velocity.y = 5;
+                                    isOnTop = false;
+                                }
+                            }
+                        }
+
+                        // Check if on top
+                        isOnTop = false;
+                        for (let id in players) {
+                            if (localPlayerBody.position.y > players[id].body.position.y + 1.5 &&
+                                Math.sqrt(
+                                    Math.pow(localPlayerBody.position.x - players[id].body.position.x, 2) +
+                                    Math.pow(localPlayerBody.position.z - players[id].body.position.z, 2)
+                                ) < 1) {
+                                isOnTop = true;
+                                break;
+                            }
+                        }
+                        
+                        // Check if fallen off the platform
+                        const distanceFromCenter = Math.sqrt(
+                            localPlayerBody.position.x * localPlayerBody.position.x + 
+                            localPlayerBody.position.z * localPlayerBody.position.z
+                        );
+                        
+                        // Only respawn if fallen far below the platform
+                        // This allows the character to visibly fall off the edge
+                        if (localPlayerBody.position.y < -15) {
+                            // Player has fallen far enough - respawn
+                            respawnPlayer();
+                        }
+                        
+                        // If moving beyond platform radius, ensure gravity takes effect
+                        if (distanceFromCenter > 10) {
+                            // Make sure gravity is applied (avoid any platform edge catching)
+                            if (localPlayerBody.position.y >= 1 && localPlayerBody.velocity.y === 0) {
+                                // Add a small downward impulse to ensure falling
+                                localPlayerBody.velocity.y = -0.1;
+                            }
+                        }
+
+                        // Sync local player with physics
+                        localPlayer.position.set(
+                            localPlayerBody.position.x,
+                            localPlayerBody.position.y,
+                            localPlayerBody.position.z
+                        );
+                        
+                        // Floor collision check - prevent falling through floor
+                        if (localPlayerBody.position.y < 1 && !isFallen) {  // Platform top is at y=1
+                            localPlayerBody.position.y = 1;
+                            localPlayerBody.velocity.y = 0;
+                        } else if (localPlayerBody.position.y < 0.7 && isFallen) {
+                            // When fallen, keep above platform
+                            localPlayerBody.position.y = 0.7;
+                            localPlayerBody.velocity.y = 0;
+                        }
+                        
+                        // Convert CANNON quaternion to THREE quaternion
+                        localPlayer.quaternion.set(
+                            localPlayerBody.quaternion.x,
+                            localPlayerBody.quaternion.y,
+                            localPlayerBody.quaternion.z,
+                            localPlayerBody.quaternion.w
+                        );
+
+                        // Update Firebase
+                        playersRef.child(localPlayerId).set({
+                            position: localPlayerBody.position,
+                            quaternion: localPlayerBody.quaternion,
+                            state: isFallen ? 'fallen' : 'standing'
+                        });
+
+                        // Update other players
+                        for (let id in players) {
+                            players[id].object.position.set(
+                                players[id].body.position.x,
+                                players[id].body.position.y,
+                                players[id].body.position.z
+                            );
+                            players[id].object.quaternion.set(
+                                players[id].body.quaternion.x,
+                                players[id].body.quaternion.y,
+                                players[id].body.quaternion.z,
+                                players[id].body.quaternion.w
+                            );
+                        }
+
+                        // Camera controls - rotate around platform with arrow keys
+                        if (keys['ArrowLeft']) {
+                            cameraAngle += 0.03;
+                        }
+                        if (keys['ArrowRight']) {
+                            cameraAngle -= 0.03;
+                        }
+                        if (keys['ArrowUp'] && cameraHeight < 20) {
+                            cameraHeight += 0.3;
+                        }
+                        if (keys['ArrowDown'] && cameraHeight > 5) {
+                            cameraHeight -= 0.3;
+                        }
+
+                        // Position camera in orbit around platform, regardless of player position
+                        // This ensures camera stays fixed on platform even when player falls
+                        camera.position.x = Math.sin(cameraAngle) * cameraDistance;
+                        camera.position.z = Math.cos(cameraAngle) * cameraDistance;
+                        camera.position.y = cameraHeight;
+                        
+                        // Calculate look target based on player position only if on platform
+                        if (distanceFromCenter < 10 && localPlayerBody.position.y > 0) {
+                            // Player is on platform, look at player
+                            camera.lookAt(
+                                localPlayerBody.position.x,
+                                localPlayerBody.position.y,
+                                localPlayerBody.position.z
+                            );
+                        } else {
+                            // Player fell off or is off platform, look at center
+                            camera.lookAt(0, 0, 0);
+                        }
+
+                        // Debug info - only log occasionally to avoid flooding console
+                        if (Math.random() < 0.01) {
+                            // console.log("Player position:", localPlayerBody.position);
+                            console.log("Camera position:", camera.position);
+                            console.log("Rendering frame...");
+                            console.log("Scene objects count:", scene.children.length);
+                        }
+                        
+                        // Force render
+                        renderer.render(scene, camera);
+                    } catch (error) {
+                        console.error("Error in animation loop:", error);
+                    }
+                }
+                console.log("Starting animation loop...");
+                animate();
+
+                // Cleanup on window close
+                window.addEventListener('beforeunload', () => {
+                    playersRef.child(localPlayerId).remove();
+                });
+
+                // Add window resize event handler
+                window.addEventListener('resize', () => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                    console.log("Window resized, renderer updated");
+                });
+                
+                // Print debug info about the scene
+                console.log("Scene objects count:", scene.children.length);
+                console.log("First few scene objects:", scene.children.slice(0, 5));
+            } catch (error) {
+                console.error("Error setting up Firebase listeners:", error);
+            }
+        }
+        // Call the init function to start the application
+        initApp();
+    </script>
+</body>
+</html>
