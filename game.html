@@ -381,12 +381,12 @@
                                 movementZ -= cameraForward.z * 5;
                             }
                             if (keys['a']) { // Left
-                                movementX -= cameraRight.x * 5;
-                                movementZ -= cameraRight.z * 5;
-                            }
-                            if (keys['d']) { // Right
                                 movementX += cameraRight.x * 5;
                                 movementZ += cameraRight.z * 5;
+                            }
+                            if (keys['d']) { // Right
+                                movementX -= cameraRight.x * 5;
+                                movementZ -= cameraRight.z * 5;
                             }
                             
                             // Apply calculated velocity
