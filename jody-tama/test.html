@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jody-Tama Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { margin: 20px 0; padding: 10px; border: 1px solid #ccc; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Jody-Tama Game Test</h1>
+    
+    <div class="test-section">
+        <h2>Game Engine Tests</h2>
+        <div id="engine-tests"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Card Tests</h2>
+        <div id="card-tests"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>Move Validation Tests</h2>
+        <div id="move-tests"></div>
+    </div>
+
+    <script src="game-engine.js"></script>
+    <script>
+        // Test the game engine
+        function runTests() {
+            const game = new JodyTamaGame();
+            const results = [];
+            
+            // Test 1: Game initialization
+            try {
+                const state = game.getGameState();
+                if (state.board && state.currentPlayer === 1) {
+                    results.push({ test: 'Game Initialization', status: 'PASS', message: 'Game initialized correctly' });
+                } else {
+                    results.push({ test: 'Game Initialization', status: 'FAIL', message: 'Game not initialized properly' });
+                }
+            } catch (e) {
+                results.push({ test: 'Game Initialization', status: 'ERROR', message: e.message });
+            }
+            
+            // Test 2: Card count
+            try {
+                const cardCount = Object.keys(game.cards).length;
+                if (cardCount === 17) {
+                    results.push({ test: 'Card Count', status: 'PASS', message: `Found ${cardCount} cards` });
+                } else {
+                    results.push({ test: 'Card Count', status: 'FAIL', message: `Expected 17 cards, found ${cardCount}` });
+                }
+            } catch (e) {
+                results.push({ test: 'Card Count', status: 'ERROR', message: e.message });
+            }
+            
+            // Test 3: Player cards distribution
+            try {
+                const player1Cards = game.getPlayerCards(1);
+                const player2Cards = game.getPlayerCards(2);
+                const centerCard = game.getCenterCard();
+                
+                if (player1Cards.length === 2 && player2Cards.length === 2 && centerCard) {
+                    results.push({ test: 'Card Distribution', status: 'PASS', message: 'Cards distributed correctly' });
+                } else {
+                    results.push({ test: 'Card Distribution', status: 'FAIL', message: 'Cards not distributed correctly' });
+                }
+            } catch (e) {
+                results.push({ test: 'Card Distribution', status: 'ERROR', message: e.message });
+            }
+            
+            // Test 4: Board setup
+            try {
+                const board = game.getBoardState();
+                let player1Pieces = 0;
+                let player2Pieces = 0;
+                let masters = 0;
+                
+                for (let row = 0; row < 5; row++) {
+                    for (let col = 0; col < 5; col++) {
+                        const piece = board[row][col];
+                        if (piece) {
+                            if (piece.player === 1) player1Pieces++;
+                            if (piece.player === 2) player2Pieces++;
+                            if (piece.type === 'master') masters++;
+                        }
+                    }
+                }
+                
+                if (player1Pieces === 5 && player2Pieces === 5 && masters === 2) {
+                    results.push({ test: 'Board Setup', status: 'PASS', message: 'Board setup correctly' });
+                } else {
+                    results.push({ test: 'Board Setup', status: 'FAIL', message: `Expected 5 pieces each, 2 masters. Found P1: ${player1Pieces}, P2: ${player2Pieces}, Masters: ${masters}` });
+                }
+            } catch (e) {
+                results.push({ test: 'Board Setup', status: 'ERROR', message: e.message });
+            }
+            
+            // Test 5: Move validation
+            try {
+                const validMoves = game.getValidMoves(4, 2); // Player 1 master
+                if (Array.isArray(validMoves)) {
+                    results.push({ test: 'Move Validation', status: 'PASS', message: `Found ${validMoves.length} valid moves for master` });
+                } else {
+                    results.push({ test: 'Move Validation', status: 'FAIL', message: 'Move validation failed' });
+                }
+            } catch (e) {
+                results.push({ test: 'Move Validation', status: 'ERROR', message: e.message });
+            }
+            
+            // Display results
+            displayResults(results);
+        }
+        
+        function displayResults(results) {
+            const containers = {
+                'engine-tests': results.filter(r => r.test.includes('Game') || r.test.includes('Board')),
+                'card-tests': results.filter(r => r.test.includes('Card')),
+                'move-tests': results.filter(r => r.test.includes('Move'))
+            };
+            
+            Object.keys(containers).forEach(containerId => {
+                const container = document.getElementById(containerId);
+                const tests = containers[containerId];
+                
+                tests.forEach(test => {
+                    const div = document.createElement('div');
+                    div.className = test.status.toLowerCase();
+                    div.innerHTML = `<strong>${test.test}:</strong> ${test.message}`;
+                    container.appendChild(div);
+                });
+            });
+        }
+        
+        // Run tests when page loads
+        window.addEventListener('load', runTests);
+    </script>
+</body>
+</html>
